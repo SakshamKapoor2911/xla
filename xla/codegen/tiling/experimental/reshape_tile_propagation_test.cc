@@ -166,6 +166,9 @@ TEST_P(ReshapeExamplesTilePropagationTest, PropagateReshape) {
     ASSERT_OK(tiling_space->AssignTileSizes(param.tile_sizes));
   }
 
+  module_ = CreateNewVerifiedModule();
+  module_->AddEntryComputation(builder.Build());
+
   ASSERT_OK_AND_ASSIGN(
       Tile input_tile,
       CreateTile(param.tile_sizes, param.offsets, param.strides,

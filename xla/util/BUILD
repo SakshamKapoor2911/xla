@@ -146,7 +146,7 @@ xla_cc_test(
 bzl_library(
     name = "build_defs_bzl",
     srcs = ["build_defs.bzl"],
-    visibility = ["//visibility:private"],
+    visibility = ["//xla/tsl/testing/default:__pkg__"],
     deps = [
         "//xla/tsl:package_groups_bzl",
         "@bazel_skylib//lib:new_sets",

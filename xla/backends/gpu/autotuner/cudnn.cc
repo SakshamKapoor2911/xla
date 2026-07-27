@@ -115,7 +115,7 @@ absl::Status ApplyConfigAndUpdateWorkspaceInOutputTuple(
 }
 
 bool IsSupportedCudnnFusion(const HloInstruction& instr,
-                            se::StreamExecutor* stream_executor,
+                            const Compiler::GpuTargetConfig& target_config,
                             const DebugOptions& debug_options) {
   const HloComputation* computation = instr.fused_instructions_computation();
   const HloInstruction* hero = hlo_query::GetFirstInstructionWithOpcode(
@@ -142,7 +142,7 @@ bool IsSupportedCudnnFusion(const HloInstruction& instr,
     return false;
   }
 
-  if (GetDnnVersionInfoOrDefault(stream_executor).major_version() < 9) {
+  if (target_config.dnn_version_info.major_version() < 9) {
     VLOG(1) << "Cudnn version is too old.";
     return false;
   }
@@ -154,7 +154,7 @@ bool IsSupportedCudnnFusion(const HloInstruction& instr,
   }
 
   stream_executor::CudaComputeCapability compute_capability =
-      stream_executor->GetDeviceDescription().cuda_compute_capability();
+      target_config.device_description.cuda_compute_capability();
   if ((compute_capability.IsAtLeastAmpere() &&
        debug_options.xla_gpu_cudnn_gemm_fusion_level() > 1) ||
       (compute_capability.IsAtLeastBlackwell() &&
@@ -371,7 +371,7 @@ absl::Status ApplyConfigToCudnnCustomCall(HloInstruction& instr,
 
 bool CudnnBackend::IsSupported(const HloInstruction& instr) {
   if (instr.opcode() == HloOpcode::kFusion) {
-    return IsSupportedCudnnFusion(instr, stream_executor(), debug_options());
+    return IsSupportedCudnnFusion(instr, target_config(), debug_options());
   }
 
   if (instr.opcode() == HloOpcode::kCustomCall) {
@@ -392,7 +392,7 @@ absl::StatusOr<std::unique_ptr<BackendConfig>> CudnnBackend::GetDefaultConfig(
   }
 
   if (stream_executor() != nullptr && instr.opcode() == HloOpcode::kFusion &&
-      IsSupportedCudnnFusion(instr, stream_executor(), debug_options())) {
+      IsSupportedCudnnFusion(instr, target_config(), debug_options())) {
     ASSIGN_OR_RETURN(std::vector<std::unique_ptr<BackendConfig>> configs,
                      GetCudnnFusionConfigs(instr, stream_executor(),
                                            target_config(), debug_options()));

@@ -174,5 +174,23 @@ ENTRY entry {
   EXPECT_TRUE(Run(std::move(module), /*run_hlo_passes=*/true));
 }
 
+TEST_F(MultiModuleDriverTest, ShouldProcessInlineableXlaLate) {
+  const char* hlo_string = R"(
+HloModule module
+callee {
+  p0 = f32[] parameter(0)
+  ROOT neg = f32[] negate(p0)
+}
+ENTRY entry {
+  p0 = f32[] parameter(0)
+  ROOT call = f32[] call(p0), to_apply=callee, frontend_attributes={inlineable="xla_late"}
+}
+)";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(hlo_string));
+
+  EXPECT_TRUE(MultiModuleDriver::ShouldProcess(*module));
+}
+
 }  // namespace
 }  // namespace xla

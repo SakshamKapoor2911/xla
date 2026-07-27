@@ -64,6 +64,34 @@ absl::StatusOr<HloInstruction*> CreateBoundaryCopy(HloComputation* comp,
 
 }  // namespace
 
+bool HloModuleSplitter::ShouldSplitCall(const HloInstruction* inst) {
+  if (inst->opcode() != HloOpcode::kCall) {
+    return false;
+  }
+
+  const HloComputation* callee = inst->to_apply();
+  if (callee != nullptr) {
+    absl::string_view callee_name = callee->name();
+    if (absl::StrContains(callee_name, "manual_computation") ||
+        absl::StrContains(callee_name, "xla.sdy")) {
+      return false;
+    }
+  }
+
+  const auto& map = inst->frontend_attributes().map();
+  for (const auto& [key, value] : map) {
+    if (absl::StartsWith(key, "xla.sdy")) {
+      return false;
+    }
+  }
+
+  auto inlineable_it = map.find("inlineable");
+  if (inlineable_it != map.end() && inlineable_it->second == "xla_late") {
+    return true;
+  }
+  return map.contains("compilation_unit");
+}
+
 absl::StatusOr<bool> HloModuleSplitter::RunImpl(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
@@ -80,53 +108,54 @@ absl::StatusOr<bool> HloModuleSplitter::RunImpl(
     std::vector<HloInstruction*> instructions =
         comp->MakeInstructionPostOrder();
     for (HloInstruction* inst : instructions) {
-      if (inst->opcode() == HloOpcode::kCall) {
-        auto it = inst->frontend_attributes().map().find("compilation_unit");
-        if (it != inst->frontend_attributes().map().end()) {
-          HloComputation* callee = inst->to_apply();
+      if (ShouldSplitCall(inst)) {
+        HloComputation* callee = inst->to_apply();
 
-          if (!extracted_modules.contains(callee)) {
-            std::string base_name =
-                !it->second.empty() ? it->second : std::string(callee->name());
-            std::string name = name_uniquer.GetUniqueName(base_name);
+        auto [map_it, inserted] =
+            extracted_modules.try_emplace(callee, nullptr);
+        if (inserted) {
+          auto it = inst->frontend_attributes().map().find("compilation_unit");
+          std::string base_name =
+              (it != inst->frontend_attributes().map().end() &&
+               !it->second.empty())
+                  ? it->second
+                  : std::string(callee->name());
+          std::string name = name_uniquer.GetUniqueName(base_name);
 
-            auto sub_module =
-                std::make_unique<HloModule>(name, module->config());
-            HloCloneContext context(sub_module.get());
-            HloComputation* cloned_callee =
-                sub_module->DeepCloneComputation(callee, &context);
-            sub_module->ReplaceEntryComputation(cloned_callee);
-            extracted_modules[callee] = sub_module.get();
-            submodules_.push_back(std::move(sub_module));
-          }
-
-          // Replace call with custom-call.
-          std::vector<HloInstruction*> operands;
-          for (HloInstruction* operand : inst->operands()) {
-            ASSIGN_OR_RETURN(HloInstruction * copy,
-                             CreateBoundaryCopy(comp, operand));
-            operands.push_back(copy);
-          }
-
-          auto* custom_call = Cast<HloCustomCallInstruction>(
-              comp->AddInstruction(HloInstruction::CreateCustomCall(
-                  inst->shape(), operands, kMultiModuleCustomCallTarget,
-                  /*opaque=*/"",
-                  CustomCallApiVersion::API_VERSION_STATUS_RETURNING_UNIFIED)));
-          custom_call->set_raw_backend_config_string(
-              extracted_modules[callee]->name());
-
-          if (callee->HasSideEffect()) {
-            custom_call->set_custom_call_has_side_effect(true);
-          }
-          custom_call->set_frontend_attributes(inst->frontend_attributes());
-
-          RETURN_IF_ERROR(comp->ReplaceInstruction(inst, custom_call));
-          changed = true;
+          auto sub_module = std::make_unique<HloModule>(name, module->config());
+          HloCloneContext context(sub_module.get());
+          HloComputation* cloned_callee =
+              sub_module->DeepCloneComputation(callee, &context);
+          sub_module->ReplaceEntryComputation(cloned_callee);
+          map_it->second = sub_module.get();
+          submodules_.push_back(std::move(sub_module));
         }
+
+        // Replace call with custom-call.
+        std::vector<HloInstruction*> operands;
+        for (HloInstruction* operand : inst->operands()) {
+          ASSIGN_OR_RETURN(HloInstruction * copy,
+                           CreateBoundaryCopy(comp, operand));
+          operands.push_back(copy);
+        }
+
+        auto* custom_call = Cast<HloCustomCallInstruction>(
+            comp->AddInstruction(HloInstruction::CreateCustomCall(
+                inst->shape(), operands, kMultiModuleCustomCallTarget,
+                /*opaque=*/"",
+                CustomCallApiVersion::API_VERSION_STATUS_RETURNING_UNIFIED)));
+        custom_call->set_raw_backend_config_string(map_it->second->name());
+
+        if (callee->HasSideEffect()) {
+          custom_call->set_custom_call_has_side_effect(true);
+        }
+        custom_call->set_frontend_attributes(inst->frontend_attributes());
+
+        RETURN_IF_ERROR(comp->ReplaceInstruction(inst, custom_call));
+        changed = true;
+      }
       }
     }
-  }
 
   return changed;
 }

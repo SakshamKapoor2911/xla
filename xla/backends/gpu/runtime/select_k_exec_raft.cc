@@ -213,40 +213,68 @@ SelectAlgo choose_select_k_algorithm(uint32_t rows, uint32_t cols, uint32_t k) {
 template <>
 SelectAlgo choose_select_k_algorithm<float>(uint32_t rows, uint32_t cols,
                                             uint32_t k) {
-  if (k > 256) {
-    return SelectAlgo::kRadix11bits;
-  } else if (k > 3) {
-    if (cols > 55000) {
-      return SelectAlgo::kWarpDistributedShm;
+  if (k > 132) {
+    if (rows > 803) {
+      return SelectAlgo::kRadix8bits;
     } else {
-      if (cols > 5250) {
-        if (k > 192) {
-          return SelectAlgo::kRadix11bits;
-        } else {
-          return SelectAlgo::kWarpDistributedShm;
-        }
+      if (cols > 20215) {
+        return SelectAlgo::kRadix11bits;
       } else {
-        return SelectAlgo::kWarpDistributedShm;
+        if (k > 256) {
+          return SelectAlgo::kRadix8bits;
+        } else {
+          return SelectAlgo::kWarpFiltered;
+        }
       }
     }
   } else {
-    return SelectAlgo::kWarpImmediate;
+    if (k > 1) {
+      if (cols > 34520) {
+        return SelectAlgo::kWarpDistributedShm;
+      } else {
+        if (rows > 354) {
+          return SelectAlgo::kWarpDistributedShm;
+        } else {
+          return SelectAlgo::kWarpImmediate;
+        }
+      }
+    } else {
+      return SelectAlgo::kWarpImmediate;
+    }
   }
 }
 
 template <>
 SelectAlgo choose_select_k_algorithm<nv_bfloat16>(uint32_t rows, uint32_t cols,
                                                   uint32_t k) {
-  if (k > 256) {
-    return SelectAlgo::kRadix11bits;
-  } else if (k > 3) {
-    if (cols > 5250 && k > 192) {
-      return SelectAlgo::kRadix11bits;
+  if (k > 33) {
+    if (cols > 20215) {
+      if (rows > 994) {
+        return SelectAlgo::kRadix8bits;
+      } else {
+        return SelectAlgo::kRadix11bitsExtraPass;
+      }
     } else {
-      return SelectAlgo::kWarpDistributedShm;
+      if (k > 256) {
+        return SelectAlgo::kRadix8bits;
+      } else {
+        return SelectAlgo::kWarpFiltered;
+      }
     }
   } else {
-    return SelectAlgo::kWarpImmediate;
+    if (k > 1) {
+      if (cols > 34520) {
+        return SelectAlgo::kWarpDistributedShm;
+      } else {
+        if (rows > 364) {
+          return SelectAlgo::kWarpDistributedShm;
+        } else {
+          return SelectAlgo::kWarpImmediate;
+        }
+      }
+    } else {
+      return SelectAlgo::kWarpImmediate;
+    }
   }
 }
 

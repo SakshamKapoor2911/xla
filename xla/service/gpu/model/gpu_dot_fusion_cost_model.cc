@@ -366,10 +366,9 @@ absl::Duration CalculatePipelinedLoopTime(int64_t num_stages,
   return prologue_time + overlap_time + epilogue_time + hbm_timing.write_time;
 }
 
-int64_t CalculateHardwareLaunchWaves(int64_t threadblock_count,
-                                     int64_t shared_memory_per_block_bytes,
-                                     int num_warps,
-                                     const se::DeviceDescription& device_info) {
+SmOccupancy CalculateSmOccupancy(int64_t shared_memory_per_block_bytes,
+                                 int64_t num_warps,
+                                 const se::DeviceDescription& device_info) {
   const int64_t hardware_max_shmem = device_info.shared_memory_per_core();
   const int64_t hardware_max_threads = device_info.threads_per_core_limit();
   const int64_t max_blocks_by_shmem =
@@ -379,17 +378,34 @@ int64_t CalculateHardwareLaunchWaves(int64_t threadblock_count,
   const int64_t max_blocks_by_threads =
       hardware_max_threads / (num_warps * device_info.threads_per_warp());
 
-  const int64_t active_blocks_per_sm = std::max<int64_t>(
+  int64_t active_blocks_per_sm = std::max<int64_t>(
       1, std::min(max_blocks_by_shmem, max_blocks_by_threads));
+
+  // Clamp to the physical limit of blocks per SM, if the device provides it.
+  if (device_info.max_blocks_per_multiprocessor() > 0) {
+    active_blocks_per_sm = std::min(
+        active_blocks_per_sm, device_info.max_blocks_per_multiprocessor());
+  }
+
+  return SmOccupancy{active_blocks_per_sm, active_blocks_per_sm * num_warps};
+}
+
+int64_t CalculateHardwareLaunchWaves(int64_t threadblock_count,
+                                     int64_t shared_memory_per_block_bytes,
+                                     int64_t num_warps,
+                                     const se::DeviceDescription& device_info) {
+  const SmOccupancy occupancy = CalculateSmOccupancy(
+      shared_memory_per_block_bytes, num_warps, device_info);
+
   const int64_t total_gpu_capacity =
-      active_blocks_per_sm * device_info.core_count();
+      occupancy.active_blocks_per_sm * device_info.core_count();
   return CeilOfRatio<int64_t>(threadblock_count, total_gpu_capacity);
 }
 
 absl::Duration CalculatePipelinedLoopTimeWithLaunchWaves(
     int64_t num_stages, int64_t k_loop_iterations, int64_t threadblock_count,
     absl::Duration compute_time, const HbmEstimates& hbm_timing,
-    int64_t shared_memory_per_block_bytes, int num_warps,
+    int64_t shared_memory_per_block_bytes, int64_t num_warps,
     const se::DeviceDescription& device_info) {
   if (threadblock_count == 0) {
     return absl::ZeroDuration();
@@ -432,6 +448,29 @@ int64_t CalculateSharedMemoryPerBlockBytes(const DotProblemInfo& dot_info,
       primitive_util::BitWidth(dot_info.rhs_element_type) / 8;
 
   return (lhs_tile_bytes + rhs_tile_bytes) * num_stages;
+}
+
+void PopulateUtilizationMetrics(EstimateRunTimeData* estimates,
+                                const se::DeviceDescription& device_info) {
+  const double total_estimated_sec =
+      absl::ToDoubleSeconds(estimates->exec_time);
+  const double compute_time_sec =
+      absl::ToDoubleSeconds(estimates->compute_time);
+
+  const double peak_memory_bandwidth = device_info.memory_bandwidth();
+  const double dram_bytes =
+      static_cast<double>(estimates->bytes_read + estimates->bytes_written);
+  const double memory_roofline_sec =
+      peak_memory_bandwidth > 0.0 ? dram_bytes / peak_memory_bandwidth : 0.0;
+
+  estimates->compute_utilization =
+      total_estimated_sec > 0.0 ? compute_time_sec / total_estimated_sec : 0.0;
+  estimates->memory_utilization =
+      total_estimated_sec > 0.0 ? memory_roofline_sec / total_estimated_sec
+                                : 0.0;
+
+  DCHECK_LE(estimates->compute_utilization, 1.0);
+  DCHECK_LE(estimates->memory_utilization, 1.0);
 }
 
 }  // namespace detail
@@ -584,6 +623,8 @@ absl::StatusOr<EstimateRunTimeData> EstimateRunTimeForDotOpWithBlockParameters(
   // Assuming perfect overlap between compute and memory for the rest,
   // but main loop is now modeled precisely.
   estimates.exec_time = std::max({pipelined_loop_time, l2_time});
+
+  detail::PopulateUtilizationMetrics(&estimates, device_info);
 
   return estimates;
 }
